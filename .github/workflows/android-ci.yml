@@ -1,0 +1,64 @@
+name: Android CI & Build
+
+on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'airscan-receiver-android/**'
+      - '.github/workflows/android-ci.yml'
+  pull_request:
+    branches: [ master, main ]
+    paths:
+      - 'airscan-receiver-android/**'
+      - '.github/workflows/android-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Test Android Receiver
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Make Gradlew Executable
+        run: chmod +x airscan-receiver-android/gradlew
+
+      - name: Run Unit Tests
+        run: |
+          cd airscan-receiver-android
+          ./gradlew testDebugUnitTest --no-daemon
+
+      - name: Build Debug APK
+        run: |
+          cd airscan-receiver-android
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: airscan-receiver-debug-apk
+          path: airscan-receiver-android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+
+      - name: Upload Test Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: airscan-receiver-android/app/build/reports/tests/testDebugUnitTest/
+          retention-days: 7

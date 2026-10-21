@@ -73,6 +73,8 @@
 
 1. [index.html](https://topcss.github.io/AirScan-QR/index.html): 正式版，技术路线为单码循环播放传文件，支持摄像头扫码和pc跨应用扫码。
 2. [airscan-fountain.html](https://topcss.github.io/AirScan-QR/airscan-fountain.html) 喷泉版，技术路线为四码同传，解决了丢帧需要重传的问题，极高的提升了传输效率。
+3. [airscan-receiver-win](airscan-receiver-win/): Windows 原生窗口/屏幕捕捉接收端（基于 Go + gozxing / tuotoo）。
+4. [airscan-receiver-android](airscan-receiver-android/): Android 原生接收端（基于 CameraX + ML Kit + Jetpack Compose，支持 GitHub Actions 自动编译出包）。
 
 ## 📜 许可证
 
