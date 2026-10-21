@@ -58,10 +58,16 @@ class TransferSessionManager {
     private var totalFrames: Int = 0
     private var startTime: Long = 0
     private var isCompleted: Boolean = false
+    private var assembledData: ByteArray? = null
 
     @Synchronized
     fun onFrameScanned(frame: QrFrame): TransferState {
-        // New Task detected
+        // 若当前任务已组包完成，且收到的是同任务帧，则直接返回已完成状态，严防 assembledData 被后续高频帧置空
+        if (isCompleted && frame.taskId == this.taskId) {
+            return getCurrentState()
+        }
+
+        // 识别到新 Task，重置状态
         if (frame.taskId != this.taskId) {
             this.taskId = frame.taskId
             this.fileName = frame.fileName
@@ -69,25 +75,48 @@ class TransferSessionManager {
             this.chunks.clear()
             this.startTime = System.currentTimeMillis()
             this.isCompleted = false
+            this.assembledData = null
         }
 
-        // Store new chunk
+        // 存储新帧分片
         if (!chunks.containsKey(frame.currentIndex)) {
             chunks[frame.currentIndex] = frame.payload
         }
 
-        // Check completion
-        var assembledBytes: ByteArray? = null
+        // 检查是否集齐全部帧并组包
         var error: String? = null
         if (!isCompleted && chunks.size >= totalFrames && totalFrames > 0) {
             try {
-                assembledBytes = ProtocolParser.assembleFile(chunks, totalFrames)
-                isCompleted = true
+                this.assembledData = ProtocolParser.assembleFile(chunks, totalFrames)
+                this.isCompleted = true
             } catch (e: Exception) {
                 error = "Assemble failed: ${e.message}"
             }
         }
 
+        return getCurrentState(error)
+    }
+
+    @Synchronized
+    fun reset(): TransferState {
+        chunks.clear()
+        taskId = ""
+        fileName = ""
+        totalFrames = 0
+        startTime = 0
+        isCompleted = false
+        assembledData = null
+        return TransferState()
+    }
+
+    @Synchronized
+    fun getAssembledData(): ByteArray? = assembledData
+
+    @Synchronized
+    fun isFrameReceived(index: Int): Boolean = chunks.containsKey(index)
+
+    @Synchronized
+    private fun getCurrentState(errorMessage: String? = null): TransferState {
         val missing = calculateMissingFrames(totalFrames, chunks.keys)
         val elapsed = if (startTime > 0) (System.currentTimeMillis() - startTime) / 1000 else 0
 
@@ -100,24 +129,10 @@ class TransferSessionManager {
             isCompleted = isCompleted,
             isReceiving = !isCompleted && totalFrames > 0,
             elapsedSeconds = elapsed,
-            assembledData = assembledBytes,
-            errorMessage = error
+            assembledData = assembledData,
+            errorMessage = errorMessage
         )
     }
-
-    @Synchronized
-    fun reset(): TransferState {
-        chunks.clear()
-        taskId = ""
-        fileName = ""
-        totalFrames = 0
-        startTime = 0
-        isCompleted = false
-        return TransferState()
-    }
-
-    @Synchronized
-    fun isFrameReceived(index: Int): Boolean = chunks.containsKey(index)
 
     companion object {
         fun calculateMissingFrames(total: Int, receivedIndices: Set<Int>): List<Int> {

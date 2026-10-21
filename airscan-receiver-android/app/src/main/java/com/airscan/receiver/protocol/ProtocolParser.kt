@@ -52,16 +52,30 @@ object ProtocolParser {
     }
 
     /**
-     * Safe Base64 decoder that works seamlessly on both Android runtime and JVM unit tests.
+     * Safe Base64 decoder that handles padding, whitespace, and works seamlessly
+     * on both Android runtime and standard JVM unit tests.
      */
     fun decodeBase64(base64Str: String): ByteArray {
-        val cleanStr = base64Str.replace("\n", "").replace("\r", "").trim()
+        val cleanStr = base64Str.replace("\n", "").replace("\r", "").replace(" ", "").trim()
+        val padding = (4 - (cleanStr.length % 4)) % 4
+        val normalized = if (padding > 0) cleanStr + "=".repeat(padding) else cleanStr
+
         return try {
             val clazz = Class.forName("android.util.Base64")
             val method = clazz.getMethod("decode", String::class.java, Int::class.javaPrimitiveType)
-            method.invoke(null, cleanStr, 0) as ByteArray
+            try {
+                // Try standard DEFAULT (0)
+                method.invoke(null, normalized, 0) as ByteArray
+            } catch (_: Throwable) {
+                // Fallback to URL_SAFE (8)
+                method.invoke(null, normalized, 8) as ByteArray
+            }
         } catch (_: Throwable) {
-            java.util.Base64.getDecoder().decode(cleanStr)
+            try {
+                java.util.Base64.getDecoder().decode(normalized)
+            } catch (_: Throwable) {
+                java.util.Base64.getUrlDecoder().decode(normalized)
+            }
         }
     }
 }

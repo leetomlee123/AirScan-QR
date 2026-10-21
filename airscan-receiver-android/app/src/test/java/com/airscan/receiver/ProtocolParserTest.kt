@@ -123,6 +123,13 @@ class ProtocolParserTest {
         assertTrue(state3.missingFrames.isEmpty())
         assertNotNull(state3.assembledData)
         assertEquals(originalText, String(state3.assembledData!!, StandardCharsets.UTF_8))
+
+        // 5. Subsequent frames scanned after completion MUST retain assembledData!
+        val state4 = session.onFrameScanned(f2)
+        assertTrue(state4.isCompleted)
+        assertNotNull(state4.assembledData)
+        assertEquals(originalText, String(state4.assembledData!!, StandardCharsets.UTF_8))
+        assertNotNull(session.getAssembledData())
     }
 
     @Test
