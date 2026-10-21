@@ -4,7 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.airscan.receiver.protocol.QrFrame
+import com.airscan.receiver.protocol.AirScanPacket
 import com.airscan.receiver.protocol.TransferSessionManager
 import com.airscan.receiver.protocol.TransferState
 import kotlinx.coroutines.Dispatchers
@@ -21,8 +21,8 @@ class MainViewModel : ViewModel() {
     private val _transferState = MutableStateFlow(TransferState())
     val transferState: StateFlow<TransferState> = _transferState.asStateFlow()
 
-    fun onFrameScanned(frame: QrFrame) {
-        val newState = sessionManager.onFrameScanned(frame)
+    fun onPacketScanned(packet: AirScanPacket) {
+        val newState = sessionManager.onPacketScanned(packet)
         _transferState.value = newState
     }
 

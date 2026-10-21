@@ -68,8 +68,8 @@ class MainActivity : ComponentActivity() {
                     onRequestCameraPermission = {
                         requestPermissionLauncher.launch(Manifest.permission.CAMERA)
                     },
-                    onFrameScanned = { frame ->
-                        viewModel.onFrameScanned(frame)
+                    onPacketScanned = { packet ->
+                        viewModel.onPacketScanned(packet)
                     },
                     onSaveFileClicked = {
                         val fileName = state.fileName.ifEmpty { "received_file" }

@@ -41,7 +41,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.airscan.receiver.camera.QrCodeAnalyzer
-import com.airscan.receiver.protocol.QrFrame
+import com.airscan.receiver.protocol.AirScanPacket
+import com.airscan.receiver.protocol.TransferMode
 import com.airscan.receiver.protocol.TransferState
 import java.util.concurrent.Executors
 
@@ -51,7 +52,7 @@ fun TransferScreen(
     state: TransferState,
     hasCameraPermission: Boolean,
     onRequestCameraPermission: () -> Unit,
-    onFrameScanned: (QrFrame) -> Unit,
+    onPacketScanned: (AirScanPacket) -> Unit,
     onSaveFileClicked: () -> Unit,
     onResetClicked: () -> Unit
 ) {
@@ -113,7 +114,7 @@ fun TransferScreen(
         ) {
             if (hasCameraPermission) {
                 CameraPreview(
-                    onFrameScanned = onFrameScanned,
+                    onPacketScanned = onPacketScanned,
                     isPaused = state.isCompleted
                 )
                 // Reticle overlay
@@ -169,7 +170,7 @@ fun TransferScreen(
 
 @Composable
 fun CameraPreview(
-    onFrameScanned: (QrFrame) -> Unit,
+    onPacketScanned: (AirScanPacket) -> Unit,
     isPaused: Boolean
 ) {
     val context = LocalContext.current
@@ -192,9 +193,9 @@ fun CameraPreview(
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                     .also {
-                        it.setAnalyzer(cameraExecutor, QrCodeAnalyzer { frame ->
+                        it.setAnalyzer(cameraExecutor, QrCodeAnalyzer { packet ->
                             if (!isPaused) {
-                                onFrameScanned(frame)
+                                onPacketScanned(packet)
                             }
                         })
                     }
@@ -272,12 +273,29 @@ fun ReceivingCard(state: TransferState) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                        text = "Task ID: ${state.taskId}",
-                        color = PrimaryBlue,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = if (state.mode == TransferMode.FOUNTAIN) "喷泉码无损同步模式" else "Task ID: ${state.taskId}",
+                            color = PrimaryBlue,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        if (state.mode == TransferMode.FOUNTAIN) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .background(Color(0xFF6366F1).copy(alpha = 0.2f), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = "无视丢帧",
+                                    color = Color(0xFFA5B4FC),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
                 Text(
                     text = "${state.progressPercent}%",
@@ -309,7 +327,10 @@ fun ReceivingCard(state: TransferState) {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "接收进度: ${state.receivedCount} / ${state.totalFrames} 帧",
+                    text = if (state.mode == TransferMode.FOUNTAIN)
+                        "解码进度: ${state.receivedCount} / ${state.totalFrames} 块"
+                    else
+                        "接收进度: ${state.receivedCount} / ${state.totalFrames} 帧",
                     color = Slate400,
                     fontSize = 12.sp
                 )

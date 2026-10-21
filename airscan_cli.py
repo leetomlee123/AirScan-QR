@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AirScan-QR Terminal CLI Sender
+AirScan-QR Terminal CLI Sender (v2.0)
 专为物理隔离机、无图形界面服务器、SSH 终端设计的纯命令行二维码广播工具。
 零 GUI 依赖，基于 Unicode 半角块与 ANSI 颜色，可在任何终端中无闪烁高速播放。
+
+特性：
+1. 默认自适应 Gzip 前置压缩（日志/文本切片数暴降 70%~90%）
+2. 支持 -F / --frames 定向补帧与 -t / --task-id 复用
+3. 支持 --no-gzip 原样未压缩传输
 """
 
 import os
 import sys
 import time
+import gzip
 import base64
 import random
 import string
@@ -27,12 +33,6 @@ def parse_frame_spec(spec_str, total_frames):
     """
     解析帧规格字符串，返回 0-based 的索引列表。
     输入为 1-based（与手机接收端 UI 上展示的缺失帧编号完全一致）。
-    支持格式:
-      '7'            -> 帧 7
-      '7,12,25'      -> 帧 7, 12, 25
-      '5-10'         -> 帧 5 到 10
-      '1,3,5-8,12'   -> 混合格式
-      '7 12 25'      -> 空格分隔
     """
     if not spec_str:
         return list(range(total_frames))
@@ -74,7 +74,7 @@ def parse_frame_spec(spec_str, total_frames):
 
 class AirScanCliSender:
     def __init__(self, file_path, chunk_size=DEFAULT_CHUNK_SIZE, fps=DEFAULT_FPS,
-                 border=DEFAULT_BORDER, task_id=None, frame_spec=None):
+                 border=DEFAULT_BORDER, task_id=None, frame_spec=None, use_gzip=True):
         if not os.path.isfile(file_path):
             raise FileNotFoundError(f"文件不存在: {file_path}")
 
@@ -83,11 +83,12 @@ class AirScanCliSender:
         self.chunk_size = chunk_size
         self.fps = fps
         self.border = border
+        self.use_gzip = use_gzip
         
         # 若指定 TaskID（如手机补帧场景），则复用，否则随机生成
         self.task_id = (task_id.strip().upper() if task_id else generate_task_id())
         
-        self.chunks = self._prepare_chunks()
+        self.chunks, self.is_compressed, self.orig_size, self.wire_size = self._prepare_chunks()
         self.total_frames = len(self.chunks)
         self.running = True
 
@@ -101,9 +102,21 @@ class AirScanCliSender:
     def _prepare_chunks(self):
         with open(self.file_path, "rb") as f:
             raw_bytes = f.read()
-        self.file_size = len(raw_bytes)
-        b64_str = base64.b64encode(raw_bytes).decode("utf-8")
-        return [b64_str[i:i + self.chunk_size] for i in range(0, len(b64_str), self.chunk_size)]
+        orig_size = len(raw_bytes)
+
+        # 智能自适应压缩：若开启 gzip 且压缩后体积确实变小，则采用压缩流
+        payload_bytes = raw_bytes
+        is_compressed = False
+        if self.use_gzip and orig_size > 64:
+            gzipped = gzip.compress(raw_bytes, compresslevel=9)
+            if len(gzipped) < orig_size:
+                payload_bytes = gzipped
+                is_compressed = True
+
+        wire_size = len(payload_bytes)
+        b64_str = base64.b64encode(payload_bytes).decode("utf-8")
+        chunks = [b64_str[i:i + self.chunk_size] for i in range(0, len(b64_str), self.chunk_size)]
+        return chunks, is_compressed, orig_size, wire_size
 
     def _render_qr_ansi(self, frame_idx):
         # 协议格式: TaskID|FileName|TotalFrames|CurrentIndex|DataPayload
@@ -162,24 +175,29 @@ class AirScanCliSender:
         seq_idx = 0
         total_active = len(self.active_frame_indices)
 
+        ratio_info = ""
+        if self.is_compressed:
+            saved_pct = (1.0 - (self.wire_size / self.orig_size)) * 100
+            ratio_info = f"\033[1;32m[Gzip 压缩 -{saved_pct:.1f}%: {self.orig_size}B → {self.wire_size}B]\033[0m"
+
         try:
             while self.running:
                 real_frame_idx = self.active_frame_indices[seq_idx]
                 
                 # 构建顶部状态提示
                 mode_badge = (
-                    f"\033[1;33m[定向补帧模式: 广播 {total_active}/{self.total_frames} 帧]\033[0m"
+                    f"\033[1;33m[定向补帧: 轮播 {total_active}/{self.total_frames} 帧]\033[0m"
                     if self.is_subset else
                     f"\033[1;32m[全量广播模式]\033[0m"
                 )
 
                 header = (
-                    f"\033[H\033[1;36m📡 AirScan-QR Terminal CLI Sender\033[0m {mode_badge}\n"
-                    f"文件: \033[1;32m{self.file_name}\033[0m ({self.file_size} B) | "
+                    f"\033[H\033[1;36m📡 AirScan-QR CLI\033[0m {mode_badge} {ratio_info}\n"
+                    f"文件: \033[1;32m{self.file_name}\033[0m | "
                     f"任务ID: \033[1;33m{self.task_id}\033[0m | "
                     f"帧率: \033[1;35m{self.fps} FPS\033[0m\n"
                     f"当前广播: 帧 \033[1;37m{real_frame_idx + 1}\033[0m / {self.total_frames} "
-                    f"(轮播进度: {seq_idx + 1}/{total_active})\n"
+                    f"(轮播序号: {seq_idx + 1}/{total_active})\n"
                 )
                 
                 # 输出二维码
@@ -214,6 +232,8 @@ def main():
                         help="仅显示/广播指定帧号（1-based，与手机端缺失帧编号完全一致，支持 '7,12,25' 或 '5-10' 等）")
     parser.add_argument("-t", "--task-id", type=str, default=None,
                         help="指定 Task ID（若给手机补帧，必须指定为手机上显示的相同 Task ID，如 -t ABC）")
+    parser.add_argument("--no-gzip", action="store_true",
+                        help="禁用 Gzip 自动前置压缩（默认自动启用 Gzip）")
 
     args = parser.parse_args()
 
@@ -223,7 +243,8 @@ def main():
         fps=args.fps,
         border=args.border,
         task_id=args.task_id,
-        frame_spec=args.frames
+        frame_spec=args.frames,
+        use_gzip=not args.no_gzip
     )
     sender.start()
 
