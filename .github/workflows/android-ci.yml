@@ -1,21 +1,23 @@
-name: Android CI & Build
+name: Android CI & Release
 
 on:
   push:
     branches: [ master, main ]
-    paths:
-      - 'airscan-receiver-android/**'
-      - '.github/workflows/android-ci.yml'
+    tags: [ 'v*' ]
+    paths-ignore:
+      - '**.md'
   pull_request:
     branches: [ master, main ]
-    paths:
-      - 'airscan-receiver-android/**'
-      - '.github/workflows/android-ci.yml'
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -43,16 +45,38 @@ jobs:
           cd airscan-receiver-android
           ./gradlew testDebugUnitTest --no-daemon
 
-      - name: Build Debug APK
+      - name: Build APKs (Release & Debug)
         run: |
           cd airscan-receiver-android
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease assembleDebug --no-daemon
 
-      - name: Upload Debug APK
+      - name: Prepare APK Artifacts
+        run: |
+          mkdir -p release-apks
+          VERSION_TAG="${{ github.ref_name }}"
+          if [ -z "$VERSION_TAG" ] || [ "${{ github.ref_type }}" != "tag" ]; then
+            VERSION_TAG="v1.0.0"
+          fi
+          
+          # Find and copy release APK
+          RELEASE_APK=$(find airscan-receiver-android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -f "$RELEASE_APK" ]; then
+            cp "$RELEASE_APK" "release-apks/AirScan-Receiver-${VERSION_TAG}.apk"
+          fi
+          
+          # Find and copy debug APK
+          DEBUG_APK=$(find airscan-receiver-android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -f "$DEBUG_APK" ]; then
+            cp "$DEBUG_APK" "release-apks/AirScan-Receiver-${VERSION_TAG}-debug.apk"
+          fi
+          
+          ls -la release-apks/
+
+      - name: Upload APK Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: airscan-receiver-debug-apk
-          path: airscan-receiver-android/app/build/outputs/apk/debug/*.apk
+          name: airscan-receiver-apks
+          path: release-apks/*.apk
           retention-days: 14
 
       - name: Upload Test Report
@@ -62,3 +86,27 @@ jobs:
           name: unit-test-reports
           path: airscan-receiver-android/app/build/reports/tests/testDebugUnitTest/
           retention-days: 7
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-apks/*.apk
+          name: AirScan-QR Android Receiver ${{ github.ref_name }}
+          body: |
+            ### 📱 AirScan-QR 原生 Android 接收端 ${{ github.ref_name }}
+
+            基于 **CameraX + Google ML Kit** 原生条码扫描构建的高性能、低延迟 AirScan-QR 移动接收端。
+
+            #### ✨ 特性与改进
+            - ⚡ **原生级 30~60 FPS 高帧率识别**：毫秒级解析，告别网页端卡顿
+            - 🧩 **全协议切片支持**：标准流水线协议（`TaskID|FileName|Total|Index|Data`），支持乱序到达重组
+            - 🎯 **缺失帧实时跟踪**：与网页发送端完全对齐的缺失帧可视化矩阵与 Chip 列表
+            - 💾 **Android SAF 原生文件存盘**：支持无权限限制保存至系统“下载”目录
+            
+            #### 📦 安装包下载
+            - **标准安装包**: `AirScan-Receiver-${{ github.ref_name }}.apk`
+            - **调试版本**: `AirScan-Receiver-${{ github.ref_name }}-debug.apk`
+          generate_release_notes: true
+          draft: false
+          prerelease: false
