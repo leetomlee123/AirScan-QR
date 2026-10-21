@@ -18,6 +18,7 @@ import gzip
 import base64
 import random
 import string
+import shutil
 import argparse
 import qrcode
 
@@ -25,6 +26,13 @@ import qrcode
 DEFAULT_CHUNK_SIZE = 240   # 适配 80x24 标准终端屏幕高度
 DEFAULT_FPS = 10           # 终端流式刷新帧率 (8-10 FPS)
 DEFAULT_BORDER = 2         # 二维码静区留白 (2 格)
+
+ECC_MAP = {
+    'L': qrcode.constants.ERROR_CORRECT_L,
+    'M': qrcode.constants.ERROR_CORRECT_M,
+    'Q': qrcode.constants.ERROR_CORRECT_Q,
+    'H': qrcode.constants.ERROR_CORRECT_H,
+}
 
 def generate_task_id(length=3):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
@@ -74,16 +82,29 @@ def parse_frame_spec(spec_str, total_frames):
 
 class AirScanCliSender:
     def __init__(self, file_path, chunk_size=DEFAULT_CHUNK_SIZE, fps=DEFAULT_FPS,
-                 border=DEFAULT_BORDER, task_id=None, frame_spec=None, use_gzip=True):
-        if not os.path.isfile(file_path):
+                 border=DEFAULT_BORDER, task_id=None, frame_spec=None, use_gzip=True,
+                 ecc='L', interval_ms=None):
+        if not os.path.exists(file_path):
             raise FileNotFoundError(f"文件不存在: {file_path}")
+        if os.path.isdir(file_path):
+            raise IsADirectoryError(f"'{file_path}' 是一个目录，请指定文件或先压缩为单个归档文件")
 
         self.file_path = file_path
         self.file_name = os.path.basename(file_path)
         self.chunk_size = chunk_size
-        self.fps = fps
+        
+        # 兼容 -i (毫秒间隔) 与 -f (FPS)
+        if interval_ms is not None and interval_ms > 0:
+            self.fps = 1000.0 / interval_ms
+            self.interval_sec = interval_ms / 1000.0
+        else:
+            self.fps = fps if fps > 0 else DEFAULT_FPS
+            self.interval_sec = 1.0 / self.fps
+
         self.border = border
         self.use_gzip = use_gzip
+        self.ecc_level = ECC_MAP.get(ecc.upper(), qrcode.constants.ERROR_CORRECT_L)
+        self.ecc_name = ecc.upper()
         
         # 若指定 TaskID（如手机补帧场景），则复用，否则随机生成
         self.task_id = (task_id.strip().upper() if task_id else generate_task_id())
@@ -96,7 +117,7 @@ class AirScanCliSender:
         self.active_frame_indices = parse_frame_spec(frame_spec, self.total_frames)
         self.is_subset = len(self.active_frame_indices) < self.total_frames
 
-        # 预渲染映射表: frame_index -> ANSI QR 字符串
+        # 帧缓冲区映射: frame_index -> ANSI QR 字符串 (按需即时生成并缓存)
         self.frame_buffers = {}
 
     def _prepare_chunks(self):
@@ -116,6 +137,9 @@ class AirScanCliSender:
         wire_size = len(payload_bytes)
         b64_str = base64.b64encode(payload_bytes).decode("utf-8")
         chunks = [b64_str[i:i + self.chunk_size] for i in range(0, len(b64_str), self.chunk_size)]
+        if not chunks:
+            # 空文件特殊处理
+            chunks = [""]
         return chunks, is_compressed, orig_size, wire_size
 
     def _render_qr_ansi(self, frame_idx):
@@ -124,7 +148,7 @@ class AirScanCliSender:
         
         qr = qrcode.QRCode(
             version=None,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            error_correction=self.ecc_level,
             box_size=1,
             border=self.border
         )
@@ -155,23 +179,34 @@ class AirScanCliSender:
             line.append("\033[0m")
             lines.append("".join(line))
 
-        return "\n".join(lines)
+        return "\n".join(lines), (rows + 1) // 2
 
-    def precompute(self):
-        count = len(self.active_frame_indices)
-        sys.stdout.write(f"正在预渲染 {count} 帧二维码矩阵...\n")
-        sys.stdout.flush()
-        for idx in self.active_frame_indices:
-            self.frame_buffers[idx] = self._render_qr_ansi(idx)
+    def get_frame(self, frame_idx):
+        if frame_idx not in self.frame_buffers:
+            content, line_count = self._render_qr_ansi(frame_idx)
+            self.frame_buffers[frame_idx] = (content, line_count)
+        return self.frame_buffers[frame_idx]
 
     def start(self):
-        self.precompute()
+        # 获取第一帧用于尺寸检测
+        first_frame_idx = self.active_frame_indices[0]
+        qr_content, qr_lines = self.get_frame(first_frame_idx)
+
+        # 检查终端尺寸是否足够容纳
+        term_cols, term_lines = shutil.get_terminal_size((80, 24))
+        needed_lines = qr_lines + 6
+        if term_lines < needed_lines:
+            sys.stderr.write(
+                f"\033[1;33m⚠️ 提示: 当前终端高度为 {term_lines} 行，而二维码展示需要约 {needed_lines} 行。\033[0m\n"
+                f"\033[90m若二维码发生换行滚动导致扫码困难，建议全屏终端或使用推荐切片大小: -s 240\033[0m\n"
+                f"3秒后自动开始播放...\n"
+            )
+            time.sleep(2)
 
         # 隐藏光标，清屏
         sys.stdout.write("\033[?25l\033[2J")
         sys.stdout.flush()
 
-        delay = 1.0 / self.fps
         seq_idx = 0
         total_active = len(self.active_frame_indices)
 
@@ -183,6 +218,7 @@ class AirScanCliSender:
         try:
             while self.running:
                 real_frame_idx = self.active_frame_indices[seq_idx]
+                qr_content, _ = self.get_frame(real_frame_idx)
                 
                 # 构建顶部状态提示
                 mode_badge = (
@@ -195,20 +231,20 @@ class AirScanCliSender:
                     f"\033[H\033[1;36m📡 AirScan-QR CLI\033[0m {mode_badge} {ratio_info}\n"
                     f"文件: \033[1;32m{self.file_name}\033[0m | "
                     f"任务ID: \033[1;33m{self.task_id}\033[0m | "
-                    f"帧率: \033[1;35m{self.fps} FPS\033[0m\n"
+                    f"切片: \033[1;34m{self.chunk_size}B\033[0m | "
+                    f"纠错: \033[1;34m{self.ecc_name}\033[0m | "
+                    f"帧率: \033[1;35m{self.fps:.1f} FPS ({int(self.interval_sec*1000)}ms)\033[0m\n"
                     f"当前广播: 帧 \033[1;37m{real_frame_idx + 1}\033[0m / {self.total_frames} "
                     f"(轮播序号: {seq_idx + 1}/{total_active})\n"
                 )
                 
-                # 输出二维码
-                qr_content = self.frame_buffers[real_frame_idx]
                 footer = "\n\033[90m请用 Android 原生端对准终端扫码 | 按 Ctrl+C 退出\033[0m\n"
 
                 sys.stdout.write(header + qr_content + footer)
                 sys.stdout.flush()
 
                 seq_idx = (seq_idx + 1) % total_active
-                time.sleep(delay)
+                time.sleep(self.interval_sec)
 
         except KeyboardInterrupt:
             pass
@@ -222,10 +258,15 @@ def main():
         description="AirScan-QR CLI - 纯终端动态二维码文件传输广播工具"
     )
     parser.add_argument("file", help="要广播传输的文件路径")
-    parser.add_argument("-c", "--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE,
-                        help=f"单帧 Base64 切片大小 (默认: {DEFAULT_CHUNK_SIZE}，适配标准终端)")
+    parser.add_argument("-s", "-c", "--chunk-size", "--size", dest="chunk_size", type=int, default=DEFAULT_CHUNK_SIZE,
+                        help=f"单帧切片大小 (默认: {DEFAULT_CHUNK_SIZE}，适配标准 80x24 终端)")
     parser.add_argument("-f", "--fps", type=float, default=DEFAULT_FPS,
-                        help=f"广播帧率 (默认: {DEFAULT_FPS} FPS)")
+                        help=f"广播帧率 FPS (默认: {DEFAULT_FPS})")
+    parser.add_argument("-i", "--interval", type=float, default=None,
+                        help="每帧间隔毫秒数 ms (例如: -i 50 即 50ms 一帧，相当于 20 FPS)")
+    parser.add_argument("-e", "--ecc", "--error-correction", dest="ecc", type=str, default="L",
+                        choices=["L", "M", "Q", "H", "l", "m", "q", "h"],
+                        help="纠错等级: L(7%), M(15%), Q(25%), H(30%) (默认: L，切片数最少)")
     parser.add_argument("-b", "--border", type=int, default=DEFAULT_BORDER,
                         help=f"静区边框宽度 (默认: {DEFAULT_BORDER})")
     parser.add_argument("-F", "--frames", type=str, default=None,
@@ -237,16 +278,28 @@ def main():
 
     args = parser.parse_args()
 
-    sender = AirScanCliSender(
-        file_path=args.file,
-        chunk_size=args.chunk_size,
-        fps=args.fps,
-        border=args.border,
-        task_id=args.task_id,
-        frame_spec=args.frames,
-        use_gzip=not args.no_gzip
-    )
-    sender.start()
+    if not os.path.exists(args.file):
+        sys.stderr.write(f"\033[1;31m❌ 错误: 找不到文件 '{args.file}'\033[0m\n")
+        sys.stderr.write(f"\033[1;33m💡 提示: 请将 '{args.file}' 替换为您电脑中实际存在的文件路径，例如:\033[0m\n")
+        sys.stderr.write(f"   python airscan_cli.py your_file.txt -s 800 -i 50 -e L\n")
+        sys.exit(1)
+
+    try:
+        sender = AirScanCliSender(
+            file_path=args.file,
+            chunk_size=args.chunk_size,
+            fps=args.fps,
+            interval_ms=args.interval,
+            ecc=args.ecc,
+            border=args.border,
+            task_id=args.task_id,
+            frame_spec=args.frames,
+            use_gzip=not args.no_gzip
+        )
+        sender.start()
+    except Exception as e:
+        sys.stderr.write(f"\033[1;31m❌ 启动失败: {e}\033[0m\n")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
