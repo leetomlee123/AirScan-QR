@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.airscan.receiver.BuildConfig
 import com.airscan.receiver.camera.QrCodeAnalyzer
 import com.airscan.receiver.protocol.AirScanPacket
 import com.airscan.receiver.protocol.TransferMode
@@ -84,7 +85,7 @@ fun TransferScreen(
                     fontWeight = FontWeight.Black
                 )
                 Text(
-                    text = "Native Android Receiver (CameraX + ML Kit)",
+                    text = "Native Android Receiver v${BuildConfig.VERSION_NAME} (arm64)",
                     color = Slate400,
                     fontSize = 11.sp
                 )

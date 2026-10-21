@@ -1,6 +1,65 @@
+import java.io.ByteArrayOutputStream
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// 自动计算自增版本号与版本名
+fun computeVersionCode(): Int {
+    val prop = project.findProperty("versionCode")?.toString()?.toIntOrNull()
+    if (prop != null) return prop
+
+    val ciRun = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+    if (ciRun != null) return 100 + ciRun
+
+    return try {
+        val stdout = ByteArrayOutputStream()
+        project.exec {
+            commandLine("git", "rev-list", "--count", "HEAD")
+            standardOutput = stdout
+        }
+        val count = stdout.toString().trim().toIntOrNull() ?: 5
+        100 + count
+    } catch (e: Exception) {
+        105
+    }
+}
+
+fun computeVersionName(): String {
+    val prop = project.findProperty("versionName")?.toString()?.trim()
+    if (!prop.isNullOrEmpty()) return prop
+
+    val refName = System.getenv("GITHUB_REF_NAME")?.trim()
+    if (!refName.isNullOrEmpty() && refName.startsWith("v")) {
+        return refName.removePrefix("v")
+    }
+
+    val ciRun = System.getenv("GITHUB_RUN_NUMBER")
+    if (!ciRun.isNullOrEmpty()) {
+        return "2.0.$ciRun"
+    }
+
+    return try {
+        val stdout = ByteArrayOutputStream()
+        project.exec {
+            commandLine("git", "describe", "--tags", "--always")
+            standardOutput = stdout
+        }
+        val tag = stdout.toString().trim()
+        if (tag.startsWith("v")) tag.substring(1) else "2.0.1"
+    } catch (e: Exception) {
+        "2.0.1"
+    }
+}
+
+val currentVersionCode = computeVersionCode()
+val currentVersionName = computeVersionName()
+
+tasks.register("printVersion") {
+    doLast {
+        println("VERSION_INFO: versionCode=$currentVersionCode, versionName=$currentVersionName")
+    }
 }
 
 android {
@@ -11,8 +70,14 @@ android {
         applicationId = "com.airscan.receiver"
         minSdk = 24
         targetSdk = 34
-        versionCode = 4
-        versionName = "2.0.0"
+        versionCode = currentVersionCode
+        versionName = currentVersionName
+
+        // 仅打包 64 位 ARM (arm64-v8a)，大幅缩减 APK 体积
+        ndk {
+            abiFilters.clear()
+            abiFilters.add("arm64-v8a")
+        }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -45,6 +110,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
@@ -54,6 +120,14 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            // 仅打包 64 位 ARM (arm64-v8a)，剔除 32 位及 x86 冗余
+            excludes += listOf(
+                "lib/armeabi-v7a/**",
+                "lib/x86/**",
+                "lib/x86_64/**"
+            )
         }
     }
 }

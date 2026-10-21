@@ -40,6 +40,22 @@ jobs:
       - name: Make Gradlew Executable
         run: chmod +x airscan-receiver-android/gradlew
 
+      - name: Compute Build Version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG_NAME="${{ github.ref_name }}"
+            V_NAME="${TAG_NAME#v}"
+          else
+            TAG_NAME="v2.0.${{ github.run_number }}"
+            V_NAME="2.0.${{ github.run_number }}"
+          fi
+          V_CODE=$(( 100 + ${{ github.run_number }} ))
+          
+          echo "VERSION_TAG=${TAG_NAME}" >> $GITHUB_ENV
+          echo "VERSION_NAME=${V_NAME}" >> $GITHUB_ENV
+          echo "VERSION_CODE=${V_CODE}" >> $GITHUB_ENV
+          echo "::notice ::Auto-increment Version: ${TAG_NAME} (Code: ${V_CODE})"
+
       - name: Run Unit Tests
         run: |
           cd airscan-receiver-android
@@ -48,26 +64,24 @@ jobs:
       - name: Build APKs (Release & Debug)
         run: |
           cd airscan-receiver-android
-          ./gradlew assembleRelease assembleDebug --no-daemon
+          ./gradlew assembleRelease assembleDebug -PversionCode=${{ env.VERSION_CODE }} -PversionName=${{ env.VERSION_NAME }} --no-daemon
 
       - name: Prepare APK Artifacts
         run: |
           mkdir -p release-apks
-          VERSION_TAG="${{ github.ref_name }}"
-          if [ -z "$VERSION_TAG" ] || [ "${{ github.ref_type }}" != "tag" ]; then
-            VERSION_TAG="v1.0.0"
-          fi
           
-          # Find and copy release APK
+          # Find and copy release APK (arm64-v8a)
           RELEASE_APK=$(find airscan-receiver-android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
           if [ -f "$RELEASE_APK" ]; then
-            cp "$RELEASE_APK" "release-apks/AirScan-Receiver-${VERSION_TAG}.apk"
+            cp "$RELEASE_APK" "release-apks/AirScan-Receiver-${{ env.VERSION_TAG }}-arm64-v8a.apk"
+            cp "$RELEASE_APK" "release-apks/AirScan-Receiver-${{ env.VERSION_TAG }}.apk"
           fi
           
-          # Find and copy debug APK
+          # Find and copy debug APK (arm64-v8a)
           DEBUG_APK=$(find airscan-receiver-android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
           if [ -f "$DEBUG_APK" ]; then
-            cp "$DEBUG_APK" "release-apks/AirScan-Receiver-${VERSION_TAG}-debug.apk"
+            cp "$DEBUG_APK" "release-apks/AirScan-Receiver-${{ env.VERSION_TAG }}-debug-arm64-v8a.apk"
+            cp "$DEBUG_APK" "release-apks/AirScan-Receiver-${{ env.VERSION_TAG }}-debug.apk"
           fi
           
           ls -la release-apks/
@@ -88,25 +102,29 @@ jobs:
           retention-days: 7
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.VERSION_TAG }}
+          target_commitish: ${{ github.sha }}
           files: release-apks/*.apk
-          name: AirScan-QR Android Receiver ${{ github.ref_name }}
+          name: AirScan-QR Android Receiver ${{ env.VERSION_TAG }} (arm64-v8a)
           body: |
-            ### 📱 AirScan-QR 原生 Android 接收端 ${{ github.ref_name }}
+            ### 📱 AirScan-QR 原生 Android 接收端 ${{ env.VERSION_TAG }}
 
-            基于 **CameraX + Google ML Kit** 原生条码扫描构建的高性能、低延迟 AirScan-QR 移动接收端。
+            基于 **CameraX + Google ML Kit** 原生条码扫描构建的高性能移动接收端。
 
-            #### ✨ 特性与改进
-            - ⚡ **原生级 30~60 FPS 高帧率识别**：毫秒级解析，告别网页端卡顿
-            - 🧩 **全协议切片支持**：标准流水线协议（`TaskID|FileName|Total|Index|Data`），支持乱序到达重组
-            - 🎯 **缺失帧实时跟踪**：与网页发送端完全对齐的缺失帧可视化矩阵与 Chip 列表
-            - 💾 **Android SAF 原生文件存盘**：支持无权限限制保存至系统“下载”目录
-            
-            #### 📦 安装包下载
-            - **标准安装包**: `AirScan-Receiver-${{ github.ref_name }}.apk`
-            - **调试版本**: `AirScan-Receiver-${{ github.ref_name }}-debug.apk`
+            #### 🚀 架构与核心优化
+            - 🎯 **纯 64 位架构 (arm64-v8a)**：仅打包 ARMv8 架构动态库，剔除所有 x86 及 32 位冗余代码，体积大幅精简 60%+
+            - 🔢 **版本号自动递增**：VersionCode: `${{ env.VERSION_CODE }}`，VersionName: `${{ env.VERSION_NAME }}`
+            - 🗜️ **自适应 Gzip 透明解压**：无感解压 Python CLI / Web 发送端的前置压缩数据
+            - 🌊 **原生喷泉码 (LT Codes) 译码**：无视丢帧与乱序，无损秒级重建文件
+            - 🔆 **屏幕常亮守护**：扫码期间系统常亮，避免传输意外中断
+
+            #### 📦 安装包下载 (arm64-v8a)
+            - **arm64-v8a 正式版**: [`AirScan-Receiver-${{ env.VERSION_TAG }}-arm64-v8a.apk`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION_TAG }}/AirScan-Receiver-${{ env.VERSION_TAG }}-arm64-v8a.apk)
+            - **通用名称正式版**: [`AirScan-Receiver-${{ env.VERSION_TAG }}.apk`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION_TAG }}/AirScan-Receiver-${{ env.VERSION_TAG }}.apk)
+            - **arm64-v8a 调试版**: [`AirScan-Receiver-${{ env.VERSION_TAG }}-debug-arm64-v8a.apk`](https://github.com/${{ github.repository }}/releases/download/${{ env.VERSION_TAG }}/AirScan-Receiver-${{ env.VERSION_TAG }}-debug-arm64-v8a.apk)
           generate_release_notes: true
           draft: false
           prerelease: false
