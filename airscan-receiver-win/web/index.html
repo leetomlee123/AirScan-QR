@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AirScan-QR 桌面接收端 (Windows Native)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/js/jsQR.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col items-center justify-center p-4">
+    <div class="w-full max-w-2xl bg-slate-800/90 backdrop-blur border border-slate-700 rounded-2xl p-6 shadow-2xl space-y-5">
+        <!-- 头部 -->
+        <div class="flex items-center justify-between border-b border-slate-700/80 pb-4">
+            <div>
+                <h1 class="text-2xl font-bold bg-gradient-to-r from-blue-400 to-indigo-300 bg-clip-text text-transparent">
+                    AirScan-QR 桌面接收端
+                </h1>
+                <p class="text-xs text-slate-400 mt-1">Windows 原生 API · 穿透被遮挡应用 · 双核解码引擎</p>
+            </div>
+            <span id="badgeStatus" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300">
+                空闲待命
+            </span>
+        </div>
+
+        <!-- 窗口选择 -->
+        <div class="space-y-2">
+            <label class="block text-sm font-medium text-slate-300 flex justify-between items-center">
+                <span>选择捕获目标应用窗口：</span>
+                <button onclick="refreshWindows()" class="text-xs text-blue-400 hover:text-blue-300 transition">
+                    🔄 刷新窗口列表
+                </button>
+            </label>
+            <select id="winSelect" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-500 text-slate-200">
+                <option value="0">🖥️ [全屏捕获] 整个桌面屏幕 (推荐用于远程桌面/多窗口)</option>
+            </select>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="flex space-x-3">
+            <button id="btnStart" onclick="toggleCapture()" class="flex-1 py-3 px-6 rounded-xl font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow-lg transition duration-200 flex items-center justify-center gap-2">
+                <span>▶️</span> 开始捕获并扫码
+            </button>
+            <button id="btnCam" onclick="toggleCamera()" class="flex-1 py-3 px-6 rounded-xl font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg transition duration-200 flex items-center justify-center gap-2">
+                <span>📷</span> 摄像头扫码
+            </button>
+        </div>
+
+        <!-- 摄像头扫码模式（DLP 黑屏时的替代通道） -->
+        <div id="camBox" class="hidden space-y-1.5">
+            <div class="flex justify-between items-center text-xs text-slate-400">
+                <span>📷 摄像头实时画面 (对准发送端屏幕)：</span>
+                <span id="camHint" class="text-emerald-400">等待中...</span>
+            </div>
+            <div class="w-full h-44 bg-slate-950 rounded-xl border border-slate-700/80 overflow-hidden flex items-center justify-center relative">
+                <video id="camVideo" class="max-h-full max-w-full object-contain hidden" autoplay playsinline muted></video>
+                <span id="camPlaceholder" class="text-xs text-slate-500 italic">启动摄像头后此处将显示实时画面</span>
+            </div>
+        </div>
+
+        <!-- 实时捕获监控画面 (核心诊断) -->
+        <div id="capBox" class="space-y-1.5">
+            <div class="flex justify-between items-center text-xs text-slate-400">
+                <span>📷 实时抓取画面诊断预览 (确认是否抓到清晰二维码)：</span>
+                <span id="capFps" class="text-blue-400">捕获帧数: 0</span>
+            </div>
+            <div class="w-full h-44 bg-slate-950 rounded-xl border border-slate-700/80 overflow-hidden flex items-center justify-center relative">
+                <img id="previewImg" class="max-h-full max-w-full object-contain hidden" alt="画面预览" />
+                <span id="previewPlaceholder" class="text-xs text-slate-500 italic">启动捕获后此处将实时显示捕获画面</span>
+            </div>
+        </div>
+
+        <!-- 进度卡片 -->
+        <div id="progressCard" class="bg-slate-950/60 border border-slate-700/60 rounded-xl p-4 space-y-3">
+            <div class="flex justify-between text-sm">
+                <span class="text-slate-400">当前任务:</span>
+                <span id="taskName" class="font-medium text-blue-300">等待扫码中...</span>
+            </div>
+            <div class="flex justify-between text-sm">
+                <span class="text-slate-400">传输协议 / 进度:</span>
+                <span id="taskProgress" class="font-medium text-emerald-400">0%</span>
+            </div>
+            <!-- 进度条 -->
+            <div class="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
+                <div id="progressBar" class="bg-gradient-to-r from-blue-500 to-emerald-400 h-full w-0 transition-all duration-300"></div>
+            </div>
+            <div class="text-xs text-slate-400 flex justify-between pt-1">
+                <span id="statusDetail">就绪</span>
+                <span id="savePath" class="text-emerald-400 truncate max-w-xs"></span>
+            </div>
+            <div id="errorAlert" class="text-xs text-rose-400 hidden pt-1"></div>
+        </div>
+
+        <!-- 底部提示 -->
+        <div class="text-xs text-slate-500 text-center">
+            无需任何第三方库支持，接收成功后文件将自动保存至您的【下载】文件夹。
+        </div>
+    </div>
+
+    <script>
+        let isCapturing = false;
+        let pollTimer = null;
+        let camActive = false;
+        let camStream = null;
+        let camTimer = null;
+        let camLastText = '';
+
+        async function refreshWindows() {
+            try {
+                const res = await fetch('/api/windows');
+                const list = await res.json();
+                const sel = document.getElementById('winSelect');
+                const curVal = sel.value;
+                sel.innerHTML = '<option value="0">🖥️ [全屏捕获] 整个桌面屏幕 (推荐用于远程桌面/多窗口)</option>';
+                if(list && list.length > 0) {
+                    list.forEach(w => {
+                        const opt = document.createElement('option');
+                        opt.value = w.handle;
+                        const locked = (w.affinity && w.affinity !== 0) ? '🔒 ' : '';
+                        const lockHint = (w.affinity && w.affinity !== 0) ? ' (DLP保护-捕获黑屏，建议用摄像头扫码)' : '';
+                        opt.textContent = `${locked}🪟 [${w.width}x${w.height}] ${w.title}${lockHint}`;
+                        if (w.affinity && w.affinity !== 0) opt.dataset.locked = '1';
+                        sel.appendChild(opt);
+                    });
+                }
+                if (curVal) sel.value = curVal;
+            } catch (err) {
+                console.error("刷新窗口列表失败", err);
+            }
+        }
+
+        async function toggleCapture() {
+            const btn = document.getElementById('btnStart');
+            if (!isCapturing) {
+                // 与摄像头模式互斥：开始窗口捕获前先停掉摄像头
+                if (camActive) stopCamera();
+                const handle = document.getElementById('winSelect').value;
+                // 若选了 DLP 受保护窗口，先拦截提醒（用户态抓屏必黑）
+                const opt = document.getElementById('winSelect').selectedOptions[0];
+                if (opt && opt.dataset.locked === '1') {
+                    if (!confirm('⚠️ 该窗口设置了防截屏保护 (DLP)，抓取画面将是纯黑色，无法直接扫码。\n\n建议改用「📷 摄像头扫码」对准该窗口所在屏幕，或用手机物理扫码。\n\n仍要继续尝试窗口捕获吗？')) {
+                        return;
+                    }
+                }
+                await fetch(`/api/start?handle=${handle}`);
+                isCapturing = true;
+                btn.innerHTML = '<span>⏹️</span> 停止捕获';
+                btn.className = "flex-1 py-3 px-6 rounded-xl font-semibold bg-rose-600 hover:bg-rose-500 text-white shadow-lg transition duration-200 flex items-center justify-center gap-2";
+                document.getElementById('badgeStatus').className = "px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30";
+                document.getElementById('badgeStatus').innerText = "正在扫描";
+                document.getElementById('previewPlaceholder').classList.add('hidden');
+                document.getElementById('previewImg').classList.remove('hidden');
+                startPolling();
+            } else {
+                await fetch('/api/stop');
+                isCapturing = false;
+                btn.innerHTML = '<span>▶️</span> 开始捕获并扫码';
+                btn.className = "flex-1 py-3 px-6 rounded-xl font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow-lg transition duration-200 flex items-center justify-center gap-2";
+                document.getElementById('badgeStatus').className = "px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300";
+                document.getElementById('badgeStatus').innerText = "已停止";
+                stopPolling();
+            }
+        }
+
+        function startPolling() {
+            if (pollTimer) clearInterval(pollTimer);
+            pollTimer = setInterval(async () => {
+                try {
+                    const res = await fetch('/api/status');
+                    const st = await res.json();
+                    
+                    if (st.fileName) {
+                        document.getElementById('taskName').innerText = `${st.fileName} (${st.fileSize > 0 ? (st.fileSize/1024).toFixed(1) + ' KB' : ''})`;
+                    }
+                    const modeText = st.mode === 'fountain' ? '【四码喷泉】' : (st.mode === 'standard' ? '【单码循环】' : '');
+                    document.getElementById('taskProgress').innerText = `${modeText} ${st.progressPct}% (${st.solvedCount}/${st.total})`;
+                    document.getElementById('progressBar').style.width = `${st.progressPct}%`;
+                    document.getElementById('statusDetail').innerText = st.statusText;
+                    document.getElementById('capFps').innerText = `累计捕获: ${st.captureCount} 帧`;
+
+                    if (st.lastError) {
+                        const errEl = document.getElementById('errorAlert');
+                        errEl.innerText = "捕获警告: " + st.lastError;
+                        errEl.classList.remove('hidden');
+                    } else {
+                        document.getElementById('errorAlert').classList.add('hidden');
+                    }
+
+                    if (st.lastSavedPath) {
+                        document.getElementById('savePath').innerText = "已存: " + st.lastSavedPath;
+                    }
+
+                    // 刷新画面诊断缩略图
+                    if (st.active) {
+                        const pImg = document.getElementById('previewImg');
+                        pImg.src = '/api/preview.jpg?t=' + Date.now();
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            }, 250);
+        }
+
+        function stopPolling() {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+        }
+
+        // ========== 摄像头扫码模式（DLP 黑屏时的替代通道） ==========
+        // 前端用本地摄像头 + jsQR 解码，解码文本 POST /api/decode 交给 Go 引擎组包落盘。
+
+        async function toggleCamera() {
+            const btn = document.getElementById('btnCam');
+            if (!camActive) {
+                // 与窗口捕获互斥：启动摄像头前先停掉窗口捕获
+                if (isCapturing) {
+                    await fetch('/api/stop');
+                    isCapturing = false;
+                    const sb = document.getElementById('btnStart');
+                    sb.innerHTML = '<span>▶️</span> 开始捕获并扫码';
+                    sb.className = "flex-1 py-3 px-6 rounded-xl font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow-lg transition duration-200 flex items-center justify-center gap-2";
+                    stopPolling();
+                    document.getElementById('capBox').classList.remove('hidden');
+                }
+
+                let stream;
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
+                        audio: false
+                    });
+                } catch (err) {
+                    alert('摄像头启动失败: ' + err.message + '\n\n请检查摄像头权限/设备后重试。');
+                    return;
+                }
+
+                camActive = true;
+                camStream = stream;
+                camLastText = '';
+                const vid = document.getElementById('camVideo');
+                vid.srcObject = stream;
+                await vid.play();
+                vid.classList.remove('hidden');
+                document.getElementById('camPlaceholder').classList.add('hidden');
+                document.getElementById('camBox').classList.remove('hidden');
+                document.getElementById('capBox').classList.add('hidden');
+
+                btn.innerHTML = '<span>⏹️</span> 停止摄像头';
+                btn.className = "flex-1 py-3 px-6 rounded-xl font-semibold bg-rose-600 hover:bg-rose-500 text-white shadow-lg transition duration-200 flex items-center justify-center gap-2";
+                document.getElementById('badgeStatus').className = "px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30";
+                document.getElementById('badgeStatus').innerText = "摄像头扫码中";
+                startCameraScan();
+                startPolling(); // 复用状态轮询显示收包进度
+            } else {
+                stopCamera();
+            }
+        }
+
+        function stopCamera() {
+            camActive = false;
+            if (camTimer) { clearInterval(camTimer); camTimer = null; }
+            if (camStream) {
+                camStream.getTracks().forEach(t => t.stop());
+                camStream = null;
+            }
+            const vid = document.getElementById('camVideo');
+            vid.pause();
+            vid.srcObject = null;
+            vid.classList.add('hidden');
+            document.getElementById('camPlaceholder').classList.remove('hidden');
+            document.getElementById('camBox').classList.add('hidden');
+            document.getElementById('capBox').classList.remove('hidden');
+            const btn = document.getElementById('btnCam');
+            btn.innerHTML = '<span>📷</span> 摄像头扫码';
+            btn.className = "flex-1 py-3 px-6 rounded-xl font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg transition duration-200 flex items-center justify-center gap-2";
+            document.getElementById('badgeStatus').className = "px-3 py-1 rounded-full text-xs font-semibold bg-slate-700 text-slate-300";
+            document.getElementById('badgeStatus').innerText = "已停止";
+            stopPolling();
+        }
+
+        function startCameraScan() {
+            if (camTimer) clearInterval(camTimer);
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+            camTimer = setInterval(async () => {
+                const vid = document.getElementById('camVideo');
+                if (!camActive || !vid || vid.readyState < vid.HAVE_ENOUGH_DATA) return;
+
+                // 更新画布尺寸以匹配视频实际分辨率
+                if (canvas.width !== vid.videoWidth || canvas.height !== vid.videoHeight) {
+                    canvas.width = vid.videoWidth;
+                    canvas.height = vid.videoHeight;
+                }
+                if (canvas.width < 2 || canvas.height < 2) return;
+
+                ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+                let imgData;
+                try {
+                    imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                } catch (e) {
+                    return;
+                }
+
+                let code = null;
+                try {
+                    code = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts: 'dontInvert' });
+                } catch (e) {
+                    return;
+                }
+
+                if (code && code.data) {
+                    // 跳过与上一帧完全相同的文本，避免重复上报刷接口
+                    if (code.data !== camLastText) {
+                        camLastText = code.data;
+                        try {
+                            await fetch('/api/decode', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ text: code.data })
+                            });
+                        } catch (e) {
+                            console.error('上报解码结果失败', e);
+                        }
+                    }
+                }
+            }, 150);
+        }
+
+        refreshWindows();
+    </script>
+</body>
+</html>

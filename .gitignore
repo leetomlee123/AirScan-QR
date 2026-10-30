@@ -1,1 +1,4 @@
 lib.html
+__pycache__/
+*.exe
+
